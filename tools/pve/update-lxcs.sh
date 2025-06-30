@@ -4,7 +4,11 @@
 # Author: tteck (tteckster)
 # License: MIT
 # https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
-#THIS HAS BEEN UPDATED TO HOPEFULLY NOT FAIL OUT.
+
+# Exit on error, undefined var, or pipefail, and print failures
+set -eEuo pipefail
+trap 'echo -e "\n\033[01;31m[Error] Script failed on line $LINENO with exit code $?\033[m"' ERR
+
 function header_info() {
   clear
   cat <<"EOF"
@@ -17,7 +21,7 @@ function header_info() {
 
 EOF
 }
-set -eEuo pipefail
+
 YW=$(echo "\033[33m")
 BL=$(echo "\033[36m")
 RD=$(echo "\033[01;31m")
@@ -33,7 +37,7 @@ NODE=$(hostname)
 EXCLUDE_MENU=()
 MSG_MAX_LENGTH=0
 
-# Build checklist menu of containers
+# Build whiptail checklist
 while read -r TAG ITEM; do
   OFFSET=2
   ((${#ITEM} + OFFSET > MSG_MAX_LENGTH)) && MSG_MAX_LENGTH=${#ITEM}+OFFSET
@@ -53,7 +57,7 @@ function update_container() {
   os=$(pct config "$container" | awk '/^ostype/ {print $2}')
 
   if [[ "$os" == "ubuntu" || "$os" == "debian" || "$os" == "fedora" ]]; then
-    disk_info=$(pct exec "$container" df /boot | awk 'NR==2{gsub("%","",$5); printf "%s %.1fG %.1fG %.1fG", $5, $3/1024/1024, $2/1024/1024, $4/1024/1024 }')
+    disk_info=$(pct exec "$container" df /boot 2>/dev/null | awk 'NR==2{gsub("%","",$5); printf "%s %.1fG %.1fG %.1fG", $5, $3/1024/1024, $2/1024/1024, $4/1024/1024 }') || true
     read -ra disk_info_array <<<"$disk_info"
     echo -e "${BL}[Info]${GN} Updating ${BL}$container${CL} : ${GN}$name${CL} - ${YW}Boot Disk: ${disk_info_array[0]}% full [${disk_info_array[1]}/${disk_info_array[2]} used, ${disk_info_array[3]} free]${CL}\n"
   else
@@ -63,9 +67,10 @@ function update_container() {
   case "$os" in
     alpine) pct exec "$container" -- ash -c "apk -U upgrade" ;;
     archlinux) pct exec "$container" -- bash -c "pacman -Syyu --noconfirm" ;;
-    fedora | rocky | centos | alma) pct exec "$container" -- bash -c "dnf -y update && dnf -y upgrade" ;;
+    fedora | rocky | centos | alma)
+      pct exec "$container" -- bash -c "dnf -y update || true; dnf -y upgrade || true" ;;
     ubuntu | debian | devuan)
-      pct exec "$container" -- bash -c "apt-get update 2>/dev/null | grep 'packages.*upgraded'; apt list --upgradable && apt-get -yq dist-upgrade 2>&1; rm -rf /usr/lib/python3.*/EXTERNALLY-MANAGED" ;;
+      pct exec "$container" -- bash -c "apt-get update || true; apt list --upgradable || true; apt-get -yq dist-upgrade || true; rm -rf /usr/lib/python3.*/EXTERNALLY-MANAGED || true" ;;
     opensuse) pct exec "$container" -- bash -c "zypper ref && zypper --non-interactive dup" ;;
     *) echo -e "${RD}[Error] Unknown OS type for container $container. Skipping.${CL}"; return ;;
   esac
@@ -74,14 +79,15 @@ function update_container() {
 containers_needing_reboot=()
 header_info
 
+# Main loop through containers
 for container in $(pct list | awk '{if(NR>1) print $1}'); do
   if [[ " ${excluded_containers[@]} " =~ " $container " ]]; then
     echo -e "${BL}[Info]${GN} Skipping ${BL}$container${CL}"
     continue
   fi
 
-  status=$(pct status $container)
-  template=$(pct config $container | grep -q "template:" && echo "true" || echo "false")
+  status=$(pct status "$container")
+  template=$(pct config "$container" | grep -q "template:" && echo "true" || echo "false")
 
   if [ "$template" == "true" ]; then
     echo -e "${YW}[Skip]${CL} $container is a template."
@@ -90,7 +96,7 @@ for container in $(pct list | awk '{if(NR>1) print $1}'); do
 
   if [ "$status" == "status: running" ]; then
     echo -e "${YW}[Run]${CL} Updating $container..."
-    update_container $container
+    update_container "$container"
 
     if pct exec "$container" -- [ -e "/var/run/reboot-required" ]; then
       container_hostname=$(pct exec "$container" hostname)
@@ -101,6 +107,7 @@ for container in $(pct list | awk '{if(NR>1) print $1}'); do
   fi
 done
 
+# Final output
 header_info
 echo -e "${GN}The process is complete. Updated all running containers.${CL}\n"
 
