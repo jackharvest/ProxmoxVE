@@ -4,7 +4,7 @@
 # Author: tteck (tteckster)
 # License: MIT
 # https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
-
+#THIS HAS BEEN UPDATED TO HOPEFULLY NOT FAIL OUT.
 function header_info() {
   clear
   cat <<"EOF"
@@ -24,38 +24,34 @@ RD=$(echo "\033[01;31m")
 CM='\xE2\x9C\x94\033'
 GN=$(echo "\033[1;92m")
 CL=$(echo "\033[m")
+
 header_info
 echo "Loading..."
-whiptail --backtitle "Proxmox VE Helper Scripts" --title "Proxmox VE LXC Updater" --yesno "This Will Update LXC Containers. Proceed?" 10 58
+whiptail --backtitle "Proxmox VE Helper Scripts" --title "Proxmox VE LXC Updater" --yesno "This Will Update Running LXC Containers. Proceed?" 10 58
+
 NODE=$(hostname)
 EXCLUDE_MENU=()
 MSG_MAX_LENGTH=0
+
+# Build checklist menu of containers
 while read -r TAG ITEM; do
   OFFSET=2
   ((${#ITEM} + OFFSET > MSG_MAX_LENGTH)) && MSG_MAX_LENGTH=${#ITEM}+OFFSET
   EXCLUDE_MENU+=("$TAG" "$ITEM " "OFF")
 done < <(pct list | awk 'NR>1')
-excluded_containers=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Containers on $NODE" --checklist "\nSelect containers to skip from updates:\n" 16 $((MSG_MAX_LENGTH + 23)) 6 "${EXCLUDE_MENU[@]}" 3>&1 1>&2 2>&3 | tr -d '"')
 
-function needs_reboot() {
-  local container=$1
-  local os=$(pct config "$container" | awk '/^ostype/ {print $2}')
-  local reboot_required_file="/var/run/reboot-required.pkgs"
-  if [ -f "$reboot_required_file" ]; then
-    if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
-      if pct exec "$container" -- [ -s "$reboot_required_file" ]; then
-        return 0
-      fi
-    fi
-  fi
-  return 1
-}
+excluded_containers=$(whiptail --backtitle "Proxmox VE Helper Scripts" \
+  --title "Containers on $NODE" \
+  --checklist "\nSelect containers to skip from updates:\n" \
+  16 $((MSG_MAX_LENGTH + 23)) 6 "${EXCLUDE_MENU[@]}" \
+  3>&1 1>&2 2>&3 | tr -d '"')
 
 function update_container() {
   container=$1
   header_info
   name=$(pct exec "$container" hostname)
   os=$(pct config "$container" | awk '/^ostype/ {print $2}')
+
   if [[ "$os" == "ubuntu" || "$os" == "debian" || "$os" == "fedora" ]]; then
     disk_info=$(pct exec "$container" df /boot | awk 'NR==2{gsub("%","",$5); printf "%s %.1fG %.1fG %.1fG", $5, $3/1024/1024, $2/1024/1024, $4/1024/1024 }')
     read -ra disk_info_array <<<"$disk_info"
@@ -63,50 +59,56 @@ function update_container() {
   else
     echo -e "${BL}[Info]${GN} Updating ${BL}$container${CL} : ${GN}$name${CL} - ${YW}[No disk info for ${os}]${CL}\n"
   fi
+
   case "$os" in
-  alpine) pct exec "$container" -- ash -c "apk -U upgrade" ;;
-  archlinux) pct exec "$container" -- bash -c "pacman -Syyu --noconfirm" ;;
-  fedora | rocky | centos | alma) pct exec "$container" -- bash -c "dnf -y update && dnf -y upgrade" ;;
-  ubuntu | debian | devuan) pct exec "$container" -- bash -c "apt-get update 2>/dev/null | grep 'packages.*upgraded'; apt list --upgradable && apt-get -yq dist-upgrade 2>&1; rm -rf /usr/lib/python3.*/EXTERNALLY-MANAGED" ;;
-  opensuse) pct exec "$container" -- bash -c "zypper ref && zypper --non-interactive dup" ;;
+    alpine) pct exec "$container" -- ash -c "apk -U upgrade" ;;
+    archlinux) pct exec "$container" -- bash -c "pacman -Syyu --noconfirm" ;;
+    fedora | rocky | centos | alma) pct exec "$container" -- bash -c "dnf -y update && dnf -y upgrade" ;;
+    ubuntu | debian | devuan)
+      pct exec "$container" -- bash -c "apt-get update 2>/dev/null | grep 'packages.*upgraded'; apt list --upgradable && apt-get -yq dist-upgrade 2>&1; rm -rf /usr/lib/python3.*/EXTERNALLY-MANAGED" ;;
+    opensuse) pct exec "$container" -- bash -c "zypper ref && zypper --non-interactive dup" ;;
+    *) echo -e "${RD}[Error] Unknown OS type for container $container. Skipping.${CL}"; return ;;
   esac
 }
 
 containers_needing_reboot=()
 header_info
+
 for container in $(pct list | awk '{if(NR>1) print $1}'); do
   if [[ " ${excluded_containers[@]} " =~ " $container " ]]; then
-    header_info
     echo -e "${BL}[Info]${GN} Skipping ${BL}$container${CL}"
-    sleep 1
-  else
-    status=$(pct status $container)
-    template=$(pct config $container | grep -q "template:" && echo "true" || echo "false")
-    if [ "$template" == "false" ] && [ "$status" == "status: stopped" ]; then
-      echo -e "${BL}[Info]${GN} Starting${BL} $container ${CL} \n"
-      pct start $container
-      echo -e "${BL}[Info]${GN} Waiting For${BL} $container${CL}${GN} To Start ${CL} \n"
-      sleep 5
-      update_container $container
-      echo -e "${BL}[Info]${GN} Shutting down${BL} $container ${CL} \n"
-      pct shutdown $container &
-    elif [ "$status" == "status: running" ]; then
-      update_container $container
-    fi
+    continue
+  fi
+
+  status=$(pct status $container)
+  template=$(pct config $container | grep -q "template:" && echo "true" || echo "false")
+
+  if [ "$template" == "true" ]; then
+    echo -e "${YW}[Skip]${CL} $container is a template."
+    continue
+  fi
+
+  if [ "$status" == "status: running" ]; then
+    echo -e "${YW}[Run]${CL} Updating $container..."
+    update_container $container
+
     if pct exec "$container" -- [ -e "/var/run/reboot-required" ]; then
-      # Get the container's hostname and add it to the list
       container_hostname=$(pct exec "$container" hostname)
       containers_needing_reboot+=("$container ($container_hostname)")
     fi
+  else
+    echo -e "${YW}[Skip]${CL} $container is not running."
   fi
 done
-wait
+
 header_info
-echo -e "${GN}The process is complete, and the containers have been successfully updated.${CL}\n"
+echo -e "${GN}The process is complete. Updated all running containers.${CL}\n"
+
 if [ "${#containers_needing_reboot[@]}" -gt 0 ]; then
   echo -e "${RD}The following containers require a reboot:${CL}"
   for container_name in "${containers_needing_reboot[@]}"; do
     echo "$container_name"
   done
 fi
+
 echo ""
