@@ -10,57 +10,64 @@ source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxV
 APP="Frigate"
 CT_NAME="${CT_NAME:-frigate}"
 CTID="${CTID:-$(pvesh get /cluster/nextid)}"
-var_cpu="${var_cpu:-2}"  var_ram="${var_ram:-4096}"
-var_disk="${var_disk:-16}" var_record_disk="${var_record_disk:-128}"
-var_storage="${var_storage:-local-lvm}" var_tags="${var_tags:-media}"
-var_unprivileged="${var_unprivileged:-1}"
+var_cpu="${var_cpu:-2}"             var_ram="${var_ram:-4096}"
+var_disk="${var_disk:-16}"          var_record_disk="${var_record_disk:-128}"
+var_storage="${var_storage:-local-lvm}"   var_tags="${var_tags:-media}"
+var_unprivileged="${var_unprivileged:-1}"        # 1 = unprivileged
 
 # ─── banner ───────────────────────────────────────────────────────────────────
 header_info "$APP"
 echo -e "  🆔  Container ID: $CTID"
-echo -e "  💾  Root Disk   : ${var_disk} GB ($var_storage)"
-[[ "$var_record_disk" -gt 0 ]] && echo -e "  📹  Record Disk : ${var_record_disk} GB ($var_storage)"
+echo -e "  💾  Root Disk   : ${var_disk} GB on ${var_storage}"
+[[ "$var_record_disk" -gt 0 ]] && \
+echo -e "  📹  Record Disk : ${var_record_disk} GB on ${var_storage} (mounted /mnt/frigate)"
 echo -e "  🧠  RAM         : ${var_ram} MiB"
 echo -e "  🧮  vCPUs       : ${var_cpu}\n"
 
-# ─── template ────────────────────────────────────────────────────────────────
-pveam update -q
+# ─── template (unchanged from Rev 3) ───────────────────────────────────────────
+pveam update >/dev/null 2>&1
 tmpl=$(pveam available | grep "ubuntu-24.04-standard" | sort -Vr | head -n1 | awk '{print $2}')
-[[ -z "$tmpl" ]] && { msg_error "Ubuntu 24.04 template not found"; exit 1; }
+[[ -z "$tmpl" ]] && { msg_error "Ubuntu 24.04 template not found in PVE repo"; exit 1; }
+
 if ! ls /var/lib/vz/template/cache | grep -q "$(basename "$tmpl")"; then
-  msg_info "Downloading template…"; pveam download local "$tmpl"; msg_ok "Template ready."
+  msg_info "Downloading template $tmpl …"
+  pveam download local "$tmpl" || { msg_error "Template download failed"; exit 1; }
 fi
 tmpl_file="local:vztmpl/$(basename "$tmpl")"
 
-# ─── create LXC ───────────────────────────────────────────────────────────────
+# ─── create LXC (unchanged) ───────────────────────────────────────────────────
 msg_info "Creating LXC $CTID …"
-pct create "$CTID" "$tmpl_file" \
-  -hostname "$CT_NAME" -tags "$var_tags" \
-  -cores "$var_cpu" -memory "$var_ram" \
-  -rootfs "${var_storage}:${var_disk}" \
-  -features nesting=1,keyctl=1 -net0 name=eth0,bridge=vmbr0,ip=dhcp \
+pct create "$CTID" "$tmpl_file"                       \
+  -hostname "$CT_NAME"                               \
+  -tags "$var_tags"                                  \
+  -cores "$var_cpu" -memory "$var_ram"               \
+  -rootfs "${var_storage}:${var_disk}"               \
+  -features nesting=1,keyctl=1                       \
+  -net0 name=eth0,bridge=vmbr0,ip=dhcp               \
   -unprivileged "$var_unprivileged"
 msg_ok "Container created."
 
-[[ "$var_record_disk" -gt 0 ]] && {
-  msg_info "Adding ${var_record_disk} GB recordings volume…"
+# optional recordings disk (unchanged)
+if [[ "$var_record_disk" -gt 0 ]]; then
+  msg_info "Adding ${var_record_disk} GB recordings volume …"
   pct set "$CTID" -mp0 "${var_storage}:${var_record_disk},mp=/mnt/frigate"
-}
+fi
 
+# Intel iGPU passthrough (unchanged)
 CFG="/etc/pve/lxc/${CTID}.conf"
 grep -q "/dev/dri" "$CFG" || {
   echo "lxc.cgroup2.devices.allow: c 226:* rwm" >>"$CFG"
   echo "lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir" >>"$CFG"
 }
 
-# ─── start & gather group IDs ────────────────────────────────────────────────
+# start CT & gather group IDs (unchanged)
 pct start "$CTID"; sleep 5
 VIDEO_GID=$(pct exec "$CTID" -- getent group video  | awk -F: '{print $3}' || echo 44)
-RENDER_GID=$(pct exec "$CTID" -- getent group render| awk -F: '{print $3}' || echo 0)
+RENDER_GID=$(pct exec "$CTID" -- getent group render | awk -F: '{print $3}' || echo 0)
 
-# ─── install Docker ──────────────────────────────────────────────────────────
-msg_info "Installing Docker…"
-pct exec "$CTID" -- bash -s <<'EOS'
+# install Docker (unchanged)
+msg_info "Installing Docker in CT $CTID …"
+pct exec "$CTID" -- bash -s <<'EOF_CT'
 set -e
 apt-get update && apt-get -y upgrade
 for p in docker docker.io podman-docker containerd runc; do apt-get -y remove "$p" || true; done
@@ -74,16 +81,16 @@ https://download.docker.com/linux/ubuntu \$(. /etc/os-release && echo \$VERSION_
 apt-get update
 apt-get -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 systemctl enable --now docker
-EOS
+EOF_CT
 msg_ok "Docker installed."
 
-# ─── deploy Frigate ──────────────────────────────────────────────────────────
-msg_info "Deploying Frigate…"
-pct exec "$CTID" -- bash -s <<EOS
+# deploy Frigate (unchanged)
+msg_info "Deploying Frigate …"
+pct exec "$CTID" -- bash -s <<EOF_CT
 set -e
 mkdir -p /opt/frigate/config
 cat >/opt/frigate/docker-compose.yml <<YML
-version: "3.9"
+version: '3.9'
 services:
   frigate:
     container_name: frigate
@@ -106,21 +113,17 @@ services:
 YML
 cd /opt/frigate
 docker compose up -d
-EOS
+EOF_CT
 msg_ok "Frigate container launched."
 
-# ─── extract generated admin credentials ─────────────────────────────────────
-msg_info "Waiting for Frigate to create default admin user…"
-FRIGATE_PASS=""
-for _ in {1..20}; do
-  CREDS=$(pct exec "$CTID" -- docker logs frigate 2>&1 | grep -m1 "Created user admin with password" || true)
-  [[ -n "$CREDS" ]] && { FRIGATE_PASS=$(echo "$CREDS" | awk '{print $NF}'); break; }
-  sleep 3
-done
+# ─── NEW: fetch & print credentials ───────────────────────────────────────────
+msg_info "Retrieving Frigate credentials …"
+FRIGATE_PASS=$(pct exec "$CTID" -- bash -c \
+  "docker logs frigate 2>&1 | grep -m1 'Created user admin with password' | awk '{print \\\$NF}'") || true
 [[ -z "$FRIGATE_PASS" ]] && FRIGATE_PASS="<check logs>"
 
 # ─── summary ─────────────────────────────────────────────────────────────────
 CT_IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
-echo -e "${INFO}${YW} Frigate UI: http://${CT_IP}:8971 ${CL}"
+echo -e "${INFO}${YW} Frigate UI:  http://${CT_IP}:8971 ${CL}"
 echo -e "${INFO}${YW} Login → user: ${GN}admin${CL}  pass: ${GN}${FRIGATE_PASS}${CL}"
-echo -e "${INFO}${GN} Provisioning finished successfully!${CL}"
+echo -e "${INFO}${GN} Frigate LXC provisioning completed successfully! ${CL}"
