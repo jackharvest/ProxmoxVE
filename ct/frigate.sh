@@ -55,9 +55,6 @@ pct create "$CTID" "$tmpl_file"                       \
   -unprivileged "$var_unprivileged"
 msg_ok "Container created."
 
-
-
-
 # --- optional extra disk for recordings ---------------------------------------
 if [[ "$var_record_disk" -gt 0 ]]; then
   msg_info "Adding ${var_record_disk} GB recordings volume …"
@@ -71,21 +68,30 @@ grep -q "/dev/dri" "$CFG" || {
   echo "lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir" >>"$CFG"
 }
 
-# --- start CT & gather group IDs inside it ------------------------------------
+# --- start CT and wait until it's ready ---------------------------------------
 pct start "$CTID"
-
-# Wait until the container is fully running and responds to a harmless command
 for i in {1..20}; do
   pct exec "$CTID" -- whoami &>/dev/null && break
   sleep 1
 done
-# --- enable passwordless root login -------------------------------------------
+
+# --- disable root password and enable autologin -------------------------------
 pct exec "$CTID" -- passwd -d root
 
+pct exec "$CTID" -- bash -c "
+mkdir -p /etc/systemd/system/console-getty.service.d
+cat <<EOF > /etc/systemd/system/console-getty.service.d/autologin.conf
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear --keep-baud console 115200,38400,9600 vt220
+EOF
+systemctl daemon-reexec
+systemctl restart console-getty
+"
+
+# --- gather group IDs ---------------------------------------------------------
 VIDEO_GID=$(pct exec "$CTID" -- getent group video  | awk -F: '{print $3}' || echo 44)
 RENDER_GID=$(pct exec "$CTID" -- getent group render | awk -F: '{print $3}' || echo 0)
-
-
 
 # --- install Docker -----------------------------------------------------------
 msg_info "Installing Docker in CT $CTID …"
@@ -141,8 +147,13 @@ msg_ok "Frigate container launched."
 
 # --- retrieve Frigate credentials ---------------------------------------------
 msg_info "Retrieving Frigate credentials …"
-FRIGATE_PASS=$(pct exec "$CTID" -- bash -c \
-  "docker logs frigate 2>&1 | grep -m1 'Created user admin with password' | awk '{print \\\$NF}'") || true
+FRIGATE_PASS=""
+for i in {1..30}; do
+  FRIGATE_PASS=$(pct exec "$CTID" -- bash -c \
+    "docker logs frigate 2>&1 | grep -m1 'Created user admin with password' | awk '{print \$NF}'") || true
+  [[ -n "$FRIGATE_PASS" ]] && break
+  sleep 1
+done
 [[ -z "$FRIGATE_PASS" ]] && FRIGATE_PASS="<check logs manually>"
 
 # --- final output -------------------------------------------------------------
