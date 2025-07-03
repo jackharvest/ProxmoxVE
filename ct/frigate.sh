@@ -35,7 +35,7 @@ function update_script() {
 
 # Start the container creation process
 start
-export var_install="https://raw.githubusercontent.com/jackharvest/ProxmoxVE/main/install/frigate-install.sh"
+export var_install_override="https://raw.githubusercontent.com/jackharvest/ProxmoxVE/main/install/frigate-install.sh"
 build_container   # This will download the Ubuntu 24.04 template and create the LXC, then install Frigate
 description       # Set the container description (with links to docs/community)
 
