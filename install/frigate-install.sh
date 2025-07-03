@@ -39,6 +39,7 @@ export tz
 export var_install=skip-install
 build_container
 
+
 # Step 2: Run custom Frigate installer inside container
 msg_info "Running jackharvest custom Frigate installer..."
 if ! curl --output /dev/null --silent --head --fail https://raw.githubusercontent.com/jackharvest/ProxmoxVE/main/install/frigate-install.sh; then
