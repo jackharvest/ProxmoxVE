@@ -1,24 +1,21 @@
 #!/usr/bin/env bash
 source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
-# Copyright (c) 2021-2025 tteck (tteckster)
-# License: MIT - https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
+# Copyright (c) 2021-2025 tteck
+# License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
 # Description: Proxmox VE LXC Script for Frigate NVR on Ubuntu 24.04 with iGPU passthrough
 
 APP="Frigate"
-var_tags="${var_tags:-nvr}"              # Tag the container as NVR
-var_cpu="${var_cpu:-4}"                  # Default 4 vCPUs
-var_ram="${var_ram:-4096}"               # Default 4GB RAM
-var_disk="${var_disk:-20}"               # Default 20GB disk
-var_os="${var_os:-ubuntu}"              # Use Ubuntu base template
-var_version="${var_version:-24.04}"     # Ubuntu 24.04 LTS
-var_unprivileged="${var_unprivileged:-1}"  # 1 = Unprivileged container (recommended)
+var_tags="${var_tags:-nvr}"
+var_cpu="${var_cpu:-4}"
+var_ram="${var_ram:-4096}"
+var_disk="${var_disk:-20}"
+var_os="${var_os:-ubuntu}"
+var_version="${var_version:-24.04}"
+var_unprivileged="${var_unprivileged:-1}"  # Unprivileged by default
 
-# Display header
 header_info "$APP"
-# Load default variables and colors
 variables
 color
-# Enable error handling
 catch_errors
 
 function update_script() {
@@ -33,17 +30,20 @@ function update_script() {
   exit
 }
 
-# Start the container creation process
-# Start the container creation process
 start
-build_container_no_install
+build_container_setup      # Equivalent of the first half of build_container
+build_container_download   # Gets the template
+build_container_create     # Actually creates the LXC
+build_container_customize  # Mounts devices, sets networking, sets root passwd, etc.
+start_container            # Starts the container
 
-# Inject and run your custom install script manually
+# 🧠 Custom step: run your custom Frigate install script inside the container
+msg_info "Running jackharvest Frigate installer..."
 lxc-attach -n "$CTID" -- bash -c "$(curl -fsSL https://raw.githubusercontent.com/jackharvest/ProxmoxVE/main/install/frigate-install.sh)"
+msg_ok "Frigate installation complete."
+
 description
 
-
-# If we reached here, installation succeeded
 msg_ok "Completed Successfully!\n"
 echo -e "${BU}Frigate LXC is ready.${CL}"
 echo -e "${INFO}${YW} Access the Frigate web interface at:${CL}"
