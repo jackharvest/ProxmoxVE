@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
 #  Frigate NVR – one-shot Proxmox LXC installer (Ubuntu 24.04 + Intel iGPU)
-#  Enhanced version with interactive password setup and credential extraction.
 #  Author: you@example.com | License: MIT
 # ==============================================================================
 
@@ -34,16 +33,13 @@ echo -e "  🧮  vCPUs         : ${var_cpu}"
 echo -e "  📦  Type          : Unprivileged LXC\n"
 
 # --- prompt for LXC root password ---------------------------------------------
-# This loop prompts the user for a password for the LXC's root user.
-# -s: silent mode, hides input.
-# -r: raw mode, prevents backslash interpretation.
-# The loop ensures the password is not empty and that the confirmation matches.
 while true; do
   read -s -r -p "Enter a password for the LXC root user: " LXC_PASSWORD
   echo
   read -s -r -p "Confirm the password: " LXC_PASSWORD2
   echo
-  if]; then
+  # Check if passwords are not empty and if they match.
+  if &&; then
     msg_ok "Password set."
     break
   else
@@ -166,22 +162,6 @@ msg_ok "Frigate container launched."
 CT_IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
 CRED_TIMEOUT=180 # 3 minute timeout
 
-# Wait until the Docker container is actually in a 'running' state
-msg_info "Waiting for Frigate container to start (max 60s)..."
-COUNT=0
-MAX_WAIT=60 # 60 seconds
-while]; do
-  sleep 2
-  COUNT=$((COUNT + 2))
-  if]; then
-    msg_error "Frigate Docker container failed to start within the timeout period."
-    echo -e "${INFO}${YW} Please check the logs manually with the command below:${CL}"
-    echo -e "${INFO}   pct exec $CTID -- docker logs frigate"
-    exit 1
-  fi
-done
-msg_ok "Frigate container is running."
-
 msg_info "Waiting for Frigate to generate initial credentials (max ${CRED_TIMEOUT}s) …"
 
 # Use timeout and grep to capture the credential block from the logs.
@@ -195,7 +175,8 @@ CRED_OUTPUT=$(timeout ${CRED_TIMEOUT}s bash -c "pct exec '$CTID' -- docker logs 
 FRIGATE_USER=""
 FRIGATE_PASS=""
 
-if]; then
+# Check if CRED_OUTPUT is not empty before trying to parse it
+if; then
     FRIGATE_USER=$(echo "$CRED_OUTPUT" | grep "user:" | awk '{print $NF}')
     FRIGATE_PASS=$(echo "$CRED_OUTPUT" | grep "password:" | awk '{print $NF}')
 fi
@@ -204,7 +185,9 @@ echo
 echo -e "${INFO} ${GN}Frigate LXC Provisioning Completed Successfully!${CL}"
 echo -e "${INFO} -----------------------------------------------------"
 echo -e "${INFO}${YW} Frigate UI: http://${CT_IP}:8971 ${CL}"
-if]; then
+
+# Final check to see if credentials were extracted
+if &&; then
   echo -e "${INFO}${GN} Initial Frigate credentials have been extracted:${CL}"
   echo -e "${INFO}   Username: ${YW}$FRIGATE_USER${CL}"
   echo -e "${INFO}   Password: ${YW}$FRIGATE_PASS${CL}"
