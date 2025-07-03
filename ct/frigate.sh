@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Frigate LXC Installer Script for Proxmox VE 8.4
-# Standalone installer without build.func
+# Standalone installer with verbose logging and template checks
 # Automates Ubuntu 24.04 LXC creation, Intel iGPU passthrough, optional CIFS share, and Frigate Docker deployment
 
-set -euo pipefail
+# Enable verbose output for debugging
+set -e
+set -o pipefail
+set -x
 
 ########################################
 # Helper functions
@@ -29,8 +32,6 @@ step() {
 ########################################
 # User configuration
 ########################################
-
-# Defaults
 STORAGE="local-lvm"
 BRIDGE="vmbr0"
 APP="Frigate"
@@ -41,33 +42,45 @@ TEMPLATE="ubuntu-24.04-standard_24.04-1_amd64.tar.zst"
 UNPRIV=1
 NESTING=1
 
-CTID=$(prompt --inputbox "Enter new LXC ID:" 8 40 "101")
-HOSTNAME=$(prompt --inputbox "Enter LXC hostname:" 8 40 "frigate-lxc")
-
-# CIFS share prompt
+CTID=$(prompt --inputbox "Enter new LXC ID:" 8 40 "101") || error "Canceled"
+HOSTNAME=$(prompt --inputbox "Enter LXC hostname:" 8 40 "frigate-lxc") || error "Canceled"
 SHARE=$(prompt --yesno "Configure CIFS share for /opt/frigate/media?" 8 48 && echo yes || echo no)
+
+# Show summary
+info "Configuration: CTID=$CTID, HOSTNAME=$HOSTNAME, SHARE=$SHARE"
+
+########################################
+# Validate template exists
+########################################
+step "Checking for LXC template $TEMPLATE"
+if [[ ! -f "/var/lib/vz/template/cache/$TEMPLATE" ]]; then
+  error "Template file /var/lib/vz/template/cache/$TEMPLATE not found"
+fi
+msg_ok "Template found"
 
 ########################################
 # Create LXC
 ########################################
-step "Creating LXC $CTID ($HOSTNAME) with Ubuntu 24.04..."
-pct create $CTID \
-  $STORAGE:vztmpl/$TEMPLATE \
-  --hostname $HOSTNAME \
-  --cores $CPU \
-  --memory $RAM \
-  --rootfs $STORAGE:${DISK} \
-  --net0 name=eth0,bridge=$BRIDGE,ip=dhcp \
-  --unprivileged $UNPRIV \
-  --features nesting=$NESTING
-msg_ok "LXC created"
+step "Creating LXC $CTID ($HOSTNAME) with Ubuntu 24.04"
+INFO_CMD=(pct create "$CTID" "$STORAGE:vztmpl/$TEMPLATE" \
+  --hostname "$HOSTNAME" \
+  --cores "$CPU" \
+  --memory "$RAM" \
+  --rootfs "$STORAGE:${DISK}" \
+  --net0 name=eth0,bridge="$BRIDGE",ip=dhcp \
+  --unprivileged "$UNPRIV" \
+  --features nesting="$NESTING")
+# Print command for debugging
+echo "Running: ${INFO_CMD[*]}"
+"${INFO_CMD[@]}"
+msg_ok "LXC $CTID created"
 
 ########################################
 # Passthrough Intel iGPU
 ########################################
-step "Configuring Intel Alder Lake iGPU passthrough..."
+step "Configuring Intel Alder Lake iGPU passthrough"
 CONF="/etc/pve/lxc/${CTID}.conf"
-cat <<EOF >> $CONF
+cat <<EOF >> "$CONF"
 # Intel iGPU passthrough
 lxc.cgroup2.devices.allow: c 226:0 rwm
 lxc.cgroup2.devices.allow: c 226:128 rwm
@@ -84,7 +97,7 @@ msg_ok "iGPU passthrough configured"
 # Optional CIFS share
 ########################################
 if [[ "$SHARE" == "yes" ]]; then
-  step "Configuring CIFS share for media storage..."
+  step "Configuring CIFS share for media storage"
   HOST_MNT=$(prompt --inputbox "Enter host mount point:" 8 50 "/mnt/frigate_media")
   SHARE_PATH=$(prompt --inputbox "Enter CIFS share (//IP/SHARE)" 8 50 "//192.168.1.100/frigate")
   USERNAME=$(prompt --inputbox "Enter share username" 8 40 "user")
@@ -93,7 +106,7 @@ if [[ "$SHARE" == "yes" ]]; then
   echo "$SHARE_PATH $HOST_MNT cifs _netdev,noserverino,x-systemd.automount,username=$USERNAME,password=$PASSWD 0 0" \
     >> /etc/fstab
   mount "$HOST_MNT"
-  echo "mp0: $HOST_MNT,mp=/opt/frigate/media" >> $CONF
+  echo "mp0: $HOST_MNT,mp=/opt/frigate/media" >> "$CONF"
   msg_ok "CIFS share configured"
 else
   step "Skipping CIFS share setup"
@@ -103,14 +116,14 @@ fi
 ########################################
 # Start and install dependencies
 ########################################
-step "Starting container $CTID..."
-pct start $CTID
+step "Starting container $CTID"
+pct start "$CTID"
 duration=0
-until pct exec $CTID -- true; do sleep 1; ((duration++)); [[ $duration -gt 60 ]] && error "Container failed to start"; done
+until pct exec "$CTID" -- true; do sleep 1; ((duration++)); [[ $duration -gt 60 ]] && error "Container failed to start"; done
 msg_ok "Container running"
 
-step "Installing Docker, curl, and preparing directories..."
-pct exec $CTID -- bash -lc "
+step "Installing Docker, curl, and preparing directories"
+pct exec "$CTID" -- bash -lc "
   apt-get update && apt-get upgrade -y && \
   apt-get install -y docker.io curl && \
   mkdir -p /opt/frigate/config /opt/frigate/media
@@ -120,8 +133,8 @@ msg_ok "Dependencies installed"
 ########################################
 # Deploy Frigate via Docker Compose
 ########################################
-step "Deploying Frigate via Docker Compose..."
-pct exec $CTID -- tee /opt/frigate/docker-compose.yml <<'YAML'
+step "Deploying Frigate via Docker Compose"
+pct exec "$CTID" -- tee /opt/frigate/docker-compose.yml <<'YAML'
 version: '3.9'
 services:
   frigate:
@@ -138,13 +151,13 @@ services:
     ports:
       - "5000:5000"
 YAML
-pct exec $CTID -- bash -lc "cd /opt/frigate && docker-compose up -d"
+pct exec "$CTID" -- bash -lc "cd /opt/frigate && docker-compose up -d"
 msg_ok "Frigate deployed"
 
 ########################################
 # Final
 ########################################
-step "Finalizing setup..."
-IP=$(pct exec $CTID hostname -I | awk '{print \$1}')
+step "Finalizing setup"
+IP=$(pct exec "$CTID" hostname -I | awk '{print \$1}')
 echo -e "\n${APP} is up! Access the UI at: http://$IP:5000"
 msg_ok "All steps completed"
