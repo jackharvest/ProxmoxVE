@@ -5,6 +5,9 @@
 
 source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
 
+# Disable default header banner to prevent hanging on ASCII art
+header_info() { :; }
+
 APP="Frigate"
 var_tags="security"
 var_cpu="2"
