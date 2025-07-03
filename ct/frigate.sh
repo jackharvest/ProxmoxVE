@@ -36,8 +36,9 @@ tz="${tz:-Etc/UTC}"  # fallback if not set
 export tz            # ensure it's exported for use in inner scripts
 
 
-# Step 1: Create container using standard helper
-build_container
+# Step 1: Create container without triggering default install logic
+build_container_no_install
+
 
 # Step 2: Run custom Frigate installer inside container
 msg_info "Running jackharvest custom Frigate installer..."
