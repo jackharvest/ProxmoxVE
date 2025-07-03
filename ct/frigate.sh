@@ -73,11 +73,19 @@ grep -q "/dev/dri" "$CFG" || {
 
 # --- start CT & gather group IDs inside it ------------------------------------
 pct start "$CTID"
-sleep 5
-VIDEO_GID=$(pct exec "$CTID" -- getent group video  | awk -F: '{print $3}' || echo 44)
-RENDER_GID=$(pct exec "$CTID" -- getent group render | awk -F: '{print $3}' || echo 0)
+
+# Wait until the container is fully running and responds to a harmless command
+for i in {1..20}; do
+  pct exec "$CTID" -- whoami &>/dev/null && break
+  sleep 1
+done
 # --- enable passwordless root login -------------------------------------------
 pct exec "$CTID" -- passwd -d root
+
+VIDEO_GID=$(pct exec "$CTID" -- getent group video  | awk -F: '{print $3}' || echo 44)
+RENDER_GID=$(pct exec "$CTID" -- getent group render | awk -F: '{print $3}' || echo 0)
+
+
 
 # --- install Docker -----------------------------------------------------------
 msg_info "Installing Docker in CT $CTID …"
