@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  Frigate NVR – one‑shot Proxmox LXC installer (Ubuntu 24.04 + Intel iGPU)
+#  Frigate NVR – One-Shot Proxmox LXC Installer (Ubuntu 24.04 + Intel iGPU)
 #  Author: you@example.com | License: MIT
 # ==============================================================================
 
@@ -16,10 +16,10 @@ CTID="${CTID:-$(pvesh get /cluster/nextid)}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-4096}"
 var_disk="${var_disk:-16}"
-var_record_disk="${var_record_disk:-128}"   # 0 = no extra recordings disk
+var_record_disk="${var_record_disk:-128}"
 var_storage="${var_storage:-local-lvm}"
 var_tags="${var_tags:-media}"
-var_unprivileged="${var_unprivileged:-1}"   # 1 = unprivileged
+var_unprivileged="${var_unprivileged:-1}"
 
 # --- banner -------------------------------------------------------------------
 header_info "$APP"
@@ -77,7 +77,6 @@ done
 
 # --- disable root password and enable autologin -------------------------------
 pct exec "$CTID" -- passwd -d root
-
 pct exec "$CTID" -- bash -c "
 mkdir -p /etc/systemd/system/console-getty.service.d
 cat <<EOF > /etc/systemd/system/console-getty.service.d/autologin.conf
@@ -113,11 +112,20 @@ systemctl enable --now docker
 EOF_CT
 msg_ok "Docker installed."
 
-# --- deploy Frigate via docker‑compose ----------------------------------------
+# --- deploy Frigate via docker-compose ----------------------------------------
 msg_info "Deploying Frigate …"
 pct exec "$CTID" -- bash -s <<EOF_CT
 set -e
 mkdir -p /opt/frigate/config
+
+cat >/opt/frigate/config/config.yml <<CFG
+auth:
+  enabled: true
+  users:
+    - username: admin
+      password: changeme
+CFG
+
 cat >/opt/frigate/docker-compose.yml <<YML
 version: '3.9'
 services:
@@ -140,24 +148,14 @@ services:
       - /opt/frigate/config:/config
       - /mnt/frigate:/media/frigate
 YML
+
 cd /opt/frigate
 docker compose up -d
 EOF_CT
 msg_ok "Frigate container launched."
 
-# --- retrieve Frigate credentials ---------------------------------------------
-msg_info "Retrieving Frigate credentials …"
-FRIGATE_PASS=""
-for i in {1..30}; do
-  FRIGATE_PASS=$(pct exec "$CTID" -- bash -c \
-    "docker logs frigate 2>&1 | grep -m1 'Created user admin with password' | awk '{print \$NF}'") || true
-  [[ -n "$FRIGATE_PASS" ]] && break
-  sleep 1
-done
-[[ -z "$FRIGATE_PASS" ]] && FRIGATE_PASS="<check logs manually>"
-
 # --- final output -------------------------------------------------------------
 CT_IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
 echo -e "${INFO}${YW} Frigate UI: http://${CT_IP}:8971 ${CL}"
-echo -e "${INFO}${YW} Login → user: ${GN}admin${CL}  pass: ${GN}${FRIGATE_PASS}${CL}"
+echo -e "${INFO}${YW} Login → user: ${GN}admin${CL}  pass: ${GN}changeme${CL}"
 echo -e "${INFO}${GN} Frigate LXC provisioning completed successfully! ${CL}"
