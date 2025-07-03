@@ -1,81 +1,57 @@
 #!/usr/bin/env bash
-# LXC Creation Script for Frigate (Modified by jackharvest)
-# Based on community-scripts/ProxmoxVE version, adapted for Ubuntu 24.04 and iGPU/Coral support
-# Copyright (c) 2021-2025 tteck/jackharvest - License: MIT
+source <(curl -fsSL https://raw.githubusercontent.com/jackharvest/ProxmoxVE/main/misc/build.func)
+# Copyright (c) 2021-2025 tteck (tteckster)
+# License: MIT - https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
+# Description: Proxmox VE LXC Script for Frigate NVR on Ubuntu 24.04 with iGPU passthrough
 
-source <(curl -s https://raw.githubusercontent.com/jackharvest/ProxmoxVE/main/misc/build.func)  # use jackharvest fork URL
-function header_info {
-  clear
-  cat <<"EOF"
-   ______     _       __    
-  / ____/____(_)___  / /____
- / /_   / ___/ / __ \/ __/ _ \
-/ __/  / /  / / /_/ / /_/  __/
-/_/    /_/  /_/\__,_/\__/\___/   LXC
-EOF
-}
-header_info
-echo -e "Loading LXC container configuration..."
-
-# Container base image and default resources
 APP="Frigate"
-var_disk="20"
-var_cpu="4"
-var_ram="4096"
-var_os="ubuntu"              # Use Ubuntu as base OS (was "debian")
-var_version="24.04"          # Ubuntu 24.04 LTS base image:contentReference[oaicite:5]{index=5}
-variables                   # (from build.func – sets up container config variables)
+var_tags="${var_tags:-nvr}"
+var_cpu="${var_cpu:-4}"
+var_ram="${var_ram:-4096}"
+var_disk="${var_disk:-20}"
+var_os="ubuntu"
+var_version="24.04"
+var_unprivileged="0"  # Force privileged for iGPU compatibility
+
+header_info "$APP"
+variables
 color
 catch_errors
 
-function default_settings() {
-  CT_TYPE="1"                # Container type (1 = Unprivileged, 0 = Privileged)
-  PW=""
-  CT_ID=$NEXTID
-  HN=$NSAPP
-  DISK_SIZE="$var_disk"
-  CORE_COUNT="$var_cpu"
-  RAM_SIZE="$var_ram"
-  BRG="vmbr0"
-  NET="dhcp"
-  GATE=""
-  APT_CACHER=""
-  APT_CACHER_IP=""
-  DISABLEIP6="no"
-  MTU=""
-  SD=""
-  NS=""
-  MAC=""
-  VLAN=""
-  SSH="no"
-  VERB="no"
-  echo_default      # print defaults for confirmation
-}
-
 function update_script() {
-  if [[ ! -f /etc/systemd/system/frigate.service ]]; then 
-    msg_error "No ${APP} installation found!"; exit 
+  header_info
+  check_container_storage
+  check_container_resources
+  if [[ ! -f /etc/systemd/system/frigate.service ]]; then
+    msg_error "No ${APP} installation found!"
+    exit
   fi
-  msg_error "There is currently no scripted update path – please deploy a new container for updates.:contentReference[oaicite:6]{index=6}"
+  msg_error "To update Frigate, create a new container and transfer your configuration."
   exit
 }
 
-# Begin container creation
 start
-build_container     # uses the configured vars to create the LXC and run install script
+
+# Step 1: Create container using standard helper
+build_container
+
+# Step 2: Run custom Frigate installer inside container
+msg_info "Running jackharvest custom Frigate installer..."
+if ! curl --output /dev/null --silent --head --fail https://raw.githubusercontent.com/jackharvest/ProxmoxVE/main/install/frigate-install.sh; then
+  msg_error "Custom installer script not found. Check your GitHub URL."
+  exit 1
+fi
+
+# Workaround: install missing dependencies before running full script
+lxc-attach -n "$CTID" -- bash -c "apt-get update && apt-get install -y libtbbmalloc2 libgphoto2-dev"
+
+# Run main installer
+lxc-attach -n "$CTID" -- bash -c "curl -fsSL https://raw.githubusercontent.com/jackharvest/ProxmoxVE/main/install/frigate-install.sh | bash"
+msg_ok "Frigate installation complete."
+
 description
 
-# Enable device passthrough for iGPU/Coral (if applicable)
-# Mount Intel iGPU devices (VA-API):
-pct set $CTID -mp0 /dev/dri,mp=/dev/dri
-# Mount all USB buses for Coral support (optional – safe for USB Coral) 
-pct set $CTID -mp1 /dev/bus/usb,mp=/dev/bus/usb
-
-# Finalize and display access info
-msg_info "Setting container to normal resource limits..."
-pct set $CTID -memory 1024   # reduce memory to 1GB after installation (as per upstream):contentReference[oaicite:7]{index=7}
-msg_ok "Container resources set to default limits."
-
-msg_ok "Frigate LXC creation completed successfully!\n"
-echo -e "Frigate UI should be reachable at: ${BL}http://${IP}:5000${CL}"
-echo -e "go2rtc (RTSP) UI at: ${BL}http://${IP}:1984${CL}\n"
+msg_ok "Completed Successfully!\n"
+echo -e "${BU}Frigate LXC is ready.${CL}"
+echo -e "${INFO}${YW} Access the Frigate web interface at:${CL}"
+echo -e "${TAB}${GATEWAY}${BGN}http://${IP}:5000${CL}"
