@@ -55,8 +55,8 @@ pct create "$CTID" "$tmpl_file"                       \
   -unprivileged "$var_unprivileged"
 msg_ok "Container created."
 
-# --- enable passwordless root login -------------------------------------------
-pct exec "$CTID" -- passwd -d root
+
+
 
 # --- optional extra disk for recordings ---------------------------------------
 if [[ "$var_record_disk" -gt 0 ]]; then
@@ -76,6 +76,8 @@ pct start "$CTID"
 sleep 5
 VIDEO_GID=$(pct exec "$CTID" -- getent group video  | awk -F: '{print $3}' || echo 44)
 RENDER_GID=$(pct exec "$CTID" -- getent group render | awk -F: '{print $3}' || echo 0)
+# --- enable passwordless root login -------------------------------------------
+pct exec "$CTID" -- passwd -d root
 
 # --- install Docker -----------------------------------------------------------
 msg_info "Installing Docker in CT $CTID …"
