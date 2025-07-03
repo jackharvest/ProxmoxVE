@@ -32,6 +32,8 @@ function update_script() {
 
 start
 
+: "${tz:=Etc/UTC}"  # Fallback to UTC if tz not set
+
 # Step 1: Create container using standard helper
 build_container
 
