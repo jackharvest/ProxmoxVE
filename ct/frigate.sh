@@ -32,7 +32,8 @@ step() {
 ########################################
 # User configuration
 ########################################
-STORAGE="local-lvm"
+TEMPLATE_STORAGE="local"  # for LXC OS templates
+ROOT_STORAGE="local-lvm" # for container root disks
 BRIDGE="vmbr0"
 APP="Frigate"
 CPU=2
@@ -50,23 +51,25 @@ SHARE=$(prompt --yesno "Configure CIFS share for /opt/frigate/media?" 8 48 && ec
 info "Configuration: CTID=$CTID, HOSTNAME=$HOSTNAME, SHARE=$SHARE"
 
 ########################################
-# Validate template exists
-########################################
+# Validate template exists and download if missing
 step "Checking for LXC template $TEMPLATE"
 if [[ ! -f "/var/lib/vz/template/cache/$TEMPLATE" ]]; then
-  error "Template file /var/lib/vz/template/cache/$TEMPLATE not found"
+  info "Template not found in cache; downloading via pveam..."
+  pveam update || error "Failed to update template list"
+  pveam download $TEMPLATE_STORAGE $TEMPLATE || error "Failed to download template"
+else
+  msg_ok "Template found in cache"
 fi
-msg_ok "Template found"
 
 ########################################
 # Create LXC
 ########################################
 step "Creating LXC $CTID ($HOSTNAME) with Ubuntu 24.04"
-INFO_CMD=(pct create "$CTID" "$STORAGE:vztmpl/$TEMPLATE" \
+INFO_CMD=(pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$TEMPLATE" \
   --hostname "$HOSTNAME" \
   --cores "$CPU" \
   --memory "$RAM" \
-  --rootfs "$STORAGE:${DISK}" \
+  --rootfs "$ROOT_STORAGE:${DISK}" \
   --net0 name=eth0,bridge="$BRIDGE",ip=dhcp \
   --unprivileged "$UNPRIV" \
   --features nesting="$NESTING")
