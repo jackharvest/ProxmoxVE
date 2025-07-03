@@ -1,79 +1,61 @@
 #!/usr/bin/env bash
-# Frigate Install Script (Modified by jackharvest for LXC Ubuntu 24.04)
-# Installs Frigate NVR natively (no Docker) with iGPU and Coral support on arm64/amd64.
+source <(curl -fsSL https://raw.githubusercontent.com/jackharvest/ProxmoxVE/main/misc/build.func)
+# Copyright (c) 2021-2025 tteck (tteckster)
+# License: MIT - https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
+# Description: Proxmox VE LXC Script for Frigate NVR on Ubuntu 24.04 with iGPU passthrough
 
-set -Eeuo pipefail
-STD="&>/dev/null"  # suppress output for cleaner logging
+APP="Frigate"
+var_tags="${var_tags:-nvr}"
+var_cpu="${var_cpu:-4}"
+var_ram="${var_ram:-4096}"
+var_disk="${var_disk:-20}"
+var_os="ubuntu"
+var_version="24.04"
+var_unprivileged="0"  # Force privileged for iGPU compatibility
 
-# 1. Update system and install base dependencies
-apt-get update $STD
-apt-get upgrade -y $STD
-# Install required packages: build tools, Git, Python, libraries for FFmpeg and OpenVINO, etc.
-apt-get install -y curl sudo git mc gpg software-properties-common $STD
-apt-get install -y automake build-essential xz-utils libtool ccache pkg-config $STD
-apt-get install -y python3 python3-dev python3-pip python3-venv python3-wheel $STD
-apt-get install -y libgtk-3-dev libssl-dev libffi-dev $STD
-# FFmpeg libraries (for building or linking)
-apt-get install -y libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev $STD
-# Intel iGPU drivers and tools (VA-API drivers and GPU tools)
-apt-get install -y intel-media-va-driver-non-free vainfo intel-gpu-tools $STD    # for HW video decode/encode
-# Coral Edge TPU runtime (USB accelerator support)
-apt-get install -y libedgetpu1-std $STD    # Google Coral runtime library:contentReference[oaicite:12]{index=12}
+header_info "$APP"
+variables
+color
+catch_errors
 
-# 2. Retrieve Frigate source code (latest stable release)
-FRIGATE_VER="0.15.0"  # example target version (modify as needed)
-git clone -b v${FRIGATE_VER} https://github.com/jackharvest/frigate.git /opt/frigate $STD  || {
-    echo "Error: Failed to clone Frigate source. Exiting."; exit 1; 
+function update_script() {
+  header_info
+  check_container_storage
+  check_container_resources
+  if [[ ! -f /etc/systemd/system/frigate.service ]]; then
+    msg_error "No ${APP} installation found!"
+    exit
+  fi
+  msg_error "To update Frigate, create a new container and transfer your configuration."
+  exit
 }
-cd /opt/frigate
 
-# 3. Build Python wheels for Frigate dependencies (improves install speed)
-pip3 install -U pip $STD   # ensure latest pip
-pip3 wheel --wheel-dir=/wheels -r /opt/frigate/docker/main/requirements-wheel.txt $STD  # build wheels for heavy deps
-pip3 install /wheels/*.whl $STD  # install all built wheels
+start
 
-# 4. Copy preset root filesystem files (service unit, default config, etc.) into system
-cp -a /opt/frigate/docker/main/rootfs/. /   # deploy Frigate service files to system:contentReference[oaicite:13]{index=13}
+tz="${tz:-Etc/UTC}"  # fallback if not set
+export tz
 
-# 5. Set architecture for hardware-specific installs
-ARCH=$(dpkg --print-architecture)
-if [[ "$ARCH" == "arm64" ]]; then
-    export TARGETARCH="arm64"
-else
-    export TARGETARCH="amd64"
-fi
-echo 'libc6 libraries/restart-without-asking boolean true' | debconf-set-selections  # suppress libc6 prompts:contentReference[oaicite:14]{index=14}
+# Step 1: Create container using standard helper (skip install)
+export var_install=skip-install
+build_container
 
-# 6. Install additional Frigate dependencies (OpenVINO, etc.)
-# Fetch the install_deps.sh from jackharvest's repo (ensures latest dependency steps)
-wget -q -O /opt/frigate/docker/main/install_deps.sh \
-  https://raw.githubusercontent.com/jackharvest/frigate/${FRIGATE_VER}/docker/main/install_deps.sh
-bash /opt/frigate/docker/main/install_deps.sh $STD  || { echo "Error in install_deps.sh"; exit 1; }
-
-# If CPU supports Intel OpenVINO (SSE4.2 or better), install OpenVINO runtime for iGPU acceleration
-if grep -q 'sse4_2' /proc/cpuinfo; then
-    pip3 install openvino $STD   # install OpenVINO Python runtime for Intel iGPU:contentReference[oaicite:15]{index=15}
+# Step 2: Run custom Frigate installer inside container
+msg_info "Running jackharvest custom Frigate installer..."
+if ! curl --output /dev/null --silent --head --fail https://raw.githubusercontent.com/jackharvest/ProxmoxVE/main/install/frigate-install.sh; then
+  msg_error "Custom installer script not found. Check your GitHub URL."
+  exit 1
 fi
 
-# 7. Install custom FFmpeg (BtbN static build) for enhanced codec support
-FFMPEG_URL="$(curl -s https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest \
-             | grep browser_download_url \
-             | grep linux-${TARGETARCH}-gpl.tar.xz \
-             | cut -d '\"' -f 4)"
-wget -qO /tmp/ffmpeg.tar.xz "$FFMPEG_URL"
-mkdir -p /usr/lib/btbn-ffmpeg && tar -xf /tmp/ffmpeg.tar.xz -C /usr/lib/btbn-ffmpeg --strip-components=1
-ln -sf /usr/lib/btbn-ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg   # use custom ffmpeg globally:contentReference[oaicite:16]{index=16}
-ln -sf /usr/lib/btbn-ffmpeg/bin/ffprobe /usr/local/bin/ffprobe
+# Workaround: install missing dependencies before running full script
+lxc-attach -n "$CTID" -- bash -c "apt-get update && apt-get install -y libtbbmalloc2 libgphoto2-dev"
 
-# 8. Install Frigate python package and front-end
-pip3 install -e /opt/frigate $STD   # install Frigate itself (as editable package)
-# (Optional: build Frigate UI if not already built)
-make -C /opt/frigate/web build $STD || echo "Web UI build skipped or failed."
+# Run main installer
+lxc-attach -n "$CTID" -- bash -c "curl -fsSL https://raw.githubusercontent.com/jackharvest/ProxmoxVE/main/install/frigate-install.sh | bash"
+msg_ok "Frigate installation complete."
 
-# 9. Enable and start Frigate service
-systemctl daemon-reload
-systemctl enable frigate.service $STD
-systemctl start frigate.service $STD
+description
 
-echo -e "\nFrigate installation complete! Frigate is running as a systemd service."
-echo "Access the Frigate UI at http://<container-IP>:5000 (or via configured IP/port)."
+msg_ok "Completed Successfully!\n"
+echo -e "${BU}Frigate LXC is ready.${CL}"
+echo -e "${INFO}${YW} Access the Frigate web interface at:${CL}"
+echo -e "${TAB}${GATEWAY}${BGN}http://${IP}:5000${CL}"
