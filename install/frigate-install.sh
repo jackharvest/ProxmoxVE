@@ -14,8 +14,8 @@ setting_up_container
 network_check
 update_os
 
-msg_info "Installing Dependencies (Patience)"
-$STD apt-get install -y {git,ca-certificates,automake,build-essential,xz-utils,libtool,ccache,pkg-config,libgtk-3-dev,libavcodec-dev,libavformat-dev,libswscale-dev,libv4l-dev,libxvidcore-dev,libx264-dev,libjpeg-dev,libpng-dev,libtiff-dev,gfortran,openexr,libatlas-base-dev,libssl-dev,libtbb2,libtbb-dev,libdc1394-22-dev,libopenexr-dev,libgstreamer-plugins-base1.0-dev,libgstreamer1.0-dev,gcc,gfortran,libopenblas-dev,liblapack-dev,libusb-1.0-0-dev,jq,moreutils}
+msg_info "Installing Dependencies from jackharvest fork"
+curl -fsSL https://raw.githubusercontent.com/jackharvest/frigate/dev/docker/main/install_deps.sh | bash
 msg_ok "Installed Dependencies"
 
 msg_info "Setup Python3"
@@ -42,7 +42,6 @@ if [[ "$CTTYPE" == "0" ]]; then
 fi
 msg_ok "Set Up Hardware Acceleration"
 
-#RELEASE=$(curl -fsSL https://api.github.com/repos/blakeblackshear/frigate/releases/latest | jq -r '.tag_name')
 msg_ok "Stop spinner to prevent segmentation fault"
 msg_info "Installing Frigate v0.14.1 (Perseverance)"
 if [ -n "$SPINNER_PID" ] && ps -p $SPINNER_PID >/dev/null; then kill $SPINNER_PID >/dev/null; fi
@@ -56,7 +55,6 @@ $STD pip3 wheel --wheel-dir=/wheels -r /opt/frigate/docker/main/requirements-whe
 cp -a /opt/frigate/docker/main/rootfs/. /
 export TARGETARCH="amd64"
 echo 'libc6 libraries/restart-without-asking boolean true' | debconf-set-selections
-$STD /opt/frigate/docker/main/install_deps.sh
 $STD apt update
 $STD ln -svf /usr/lib/btbn-ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg
 $STD ln -svf /usr/lib/btbn-ffmpeg/bin/ffprobe /usr/local/bin/ffprobe
