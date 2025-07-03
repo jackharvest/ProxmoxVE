@@ -33,12 +33,11 @@ function update_script() {
 start
 
 tz="${tz:-Etc/UTC}"  # fallback if not set
-export tz            # ensure it's exported for use in inner scripts
+export tz
 
-
-# Step 1: Create container without triggering default install logic
-build_container_no_install
-
+# Step 1: Create container using standard helper (skip install)
+export var_install=skip-install
+build_container
 
 # Step 2: Run custom Frigate installer inside container
 msg_info "Running jackharvest custom Frigate installer..."
