@@ -1,81 +1,78 @@
 #!/usr/bin/env bash
 # Frigate LXC Installer Script for Proxmox VE 8.4
-# Automates Ubuntu LXC setup with Intel iGPU passthrough and Frigate docker deployment
-# Source: https://forum.proxmox.com/threads/ubuntu-lxc-ct-setup-with-device-passthrough-on-proxmox-ve-8-4-for-frigate-installation.167234/
+# Manual Ubuntu LXC setup with Intel iGPU passthrough and Frigate docker deployment
+# Source: Adapted from Proxmox community and forum instructions
 
-source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
-
+# Configuration defaults
 APP="Frigate"
-var_tags="security"
+STORAGE="local-lvm"
+BRIDGE="vmbr0"
 var_cpu="2"
 var_ram="2048"
 var_disk="16"
-var_os="ubuntu"
-var_version="24.04"
-var_unprivileged="1"
+var_ostemplate="ubuntu-24.04-standard_24.04-1_amd64.tar.zst"
 
-header_info "$APP"
-variables
-color
-catch_errors
+# Prompt
+CTID=$(whiptail --inputbox "Enter new container ID:" 8 40 "101" 3>&1 1>&2 2>&3)
+HOSTNAME=$(whiptail --inputbox "Enter hostname for LXC:" 8 40 "frigate-lxc" 3>&1 1>&2 2>&3)
 
-# Prompt for CIFS network share mounting inside LXC
-SHARE_PASS=$(whiptail --yesno "Configure CIFS network share for Frigate media storage?" 8 48 --yes-button "Yes" --no-button "Skip" && echo yes || echo no)
+# Optional CIFS
+SHARE_PASS=$(whiptail --yesno "Configure CIFS share for /opt/frigate/media?" 8 48 && echo yes || echo no)
 
-# Create LXC container
-start
-build_container
-CTID="$CTID"
-description
+# Create LXC manually
+echo "Creating LXC CT $CTID using Ubuntu 24.04 template..."
+pct create $CTID $STORAGE:vztmpl/$var_ostemplate \
+  --hostname $HOSTNAME \
+  --cores $var_cpu \
+  --memory $var_ram \
+  --rootfs $STORAGE:${var_disk} \
+  --net0 name=eth0,bridge=$BRIDGE,ip=dhcp \
+  --unprivileged 1 \
+  --features nesting=1
 
-msg_info "Configuring Intel Alder Lake iGPU passthrough..."
+# Passthrough Intel Alder Lake iGPU
+echo "Configuring Intel iGPU passthrough..."
 CONF="/etc/pve/lxc/${CTID}.conf"
-# Allow DRM and render devices
 cat <<EOF >> $CONF
 lxc.cgroup2.devices.allow: c 226:0 rwm
 lxc.cgroup2.devices.allow: c 226:128 rwm
 lxc.mount.entry: /dev/dri/renderD128 dev/dri/renderD128 none bind,optional,create=file
 lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir
 EOF
-# Host udev rule to ensure render permissions
-cat <<'UDEV' >/etc/udev/rules.d/99-intel-chmod666.rules
+cat <<'UDEVRULE' >/etc/udev/rules.d/99-intel-chmod666.rules
 KERNEL=="renderD128", MODE="0666"
-UDEV
+UDEVRULE
 chmod 666 /dev/dri/renderD128
-msg_ok "Intel iGPU passthrough configured"
 
-# Optionally configure CIFS share
+# Configure CIFS share
 if [[ "$SHARE_PASS" == "yes" ]]; then
-  HOST_MNT=$(whiptail --inputbox "Enter host mount point (e.g., /mnt/lxc_shares/frigate)" 8 60 "/mnt/lxc_shares/frigate" 3>&1 1>&2 2>&3)
-  SHARE_PATH=$(whiptail --inputbox "Enter CIFS share (e.g., //192.168.1.100/frigate)" 8 60 "//192.168.1.100/frigate" 3>&1 1>&2 2>&3)
-  SHARE_USER=$(whiptail --inputbox "Enter share username" 8 40 "username" 3>&1 1>&2 2>&3)
-  SHARE_PASSWD=$(whiptail --passwordbox "Enter share password" 8 40 3>&1 1>&2 2>&3)
-
+  HOST_MNT=$(whiptail --inputbox "Host mount point (e.g., /mnt/frigate_media)" 8 50 "/mnt/frigate_media" 3>&1 1>&2 2>&3)
+  SHARE_PATH=$(whiptail --inputbox "CIFS share (//IP/SHARE)" 8 50 "//192.168.1.100/frigate" 3>&1 1>&2 2>&3)
+  USERNAME=$(whiptail --inputbox "Share username" 8 40 "user" 3>&1 1>&2 2>&3)
+  PASSWD=$(whiptail --passwordbox "Share password" 8 40 3>&1 1>&2 2>&3)
   mkdir -p "$HOST_MNT"
-  echo "$SHARE_PATH $HOST_MNT cifs _netdev,noserverino,x-systemd.automount,noatime,uid=100000,gid=110000,dir_mode=0770,file_mode=0770,username=$SHARE_USER,password=$SHARE_PASSWD 0 0" >> /etc/fstab
+  echo "$SHARE_PATH $HOST_MNT cifs _netdev,noserverino,x-systemd.automount,username=$USERNAME,password=$PASSWD 0 0" >> /etc/fstab
   mount "$HOST_MNT"
-  echo "mp0: $HOST_MNT,mp=/opt/frigate/media" >> "/etc/pve/lxc/${CTID}.conf"
-  msg_ok "CIFS share configured"
+  echo "mp0: $HOST_MNT,mp=/opt/frigate/media" >> $CONF
 fi
 
-# Start container and install dependencies
+# Start CT and install Frigate
 pct start $CTID
-msg_info "Installing Docker and deploying Frigate in LXC..."
-pct exec $CTID -- bash -c "
+pct exec $CTID -- bash -lc "
   apt-get update && apt-get upgrade -y && \
   apt-get install -y docker.io curl && \
   mkdir -p /opt/frigate/config /opt/frigate/media
 "
 
-# Create docker-compose for Frigate
-cat <<'EOF' >/opt/frigate/docker-compose.yml
+# Deploy Docker-Compose
+pct exec $CTID -- tee /opt/frigate/docker-compose.yml <<'YAML'
 version: '3.9'
 services:
   frigate:
+    image: ghcr.io/blakeblackshear/frigate:stable
     container_name: frigate
     privileged: true
     restart: unless-stopped
-    image: ghcr.io/blakeblackshear/frigate:stable
     shm_size: '128mb'
     devices:
       - /dev/dri:/dev/dri
@@ -84,9 +81,7 @@ services:
       - /opt/frigate/media:/media
     ports:
       - "5000:5000"
-EOF
-pct push $CTID /opt/frigate/docker-compose.yml /opt/frigate/docker-compose.yml
-pct exec $CTID -- bash -c "cd /opt/frigate && docker-compose up -d"
-msg_ok "Frigate installation complete!"
+YAML
+pct exec $CTID -- bash -lc "cd /opt/frigate && docker-compose up -d"
 
-echo -e "${INFO} Access Frigate UI at http://$(pct exec $CTID hostname -I | awk '{print \$1}'):5000"
+echo "${APP} LXC $CTID configured. Access UI at: http://$(pct exec $CTID hostname -I | awk '{print \$1}'):5000"
