@@ -28,6 +28,11 @@ install_script() {
   return 0
 }
 
+# Override interactive functions to skip default install fetch
+header_info() { :; }
+start() { :; }
+description() { :; }
+
 # Prompt for CIFS share
 SHARE_PASS=$(whiptail --yesno "Configure CIFS share for Frigate media?" 8 48 --yes-button Yes --no-button Skip && echo yes || echo no)
 
