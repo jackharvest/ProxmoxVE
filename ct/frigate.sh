@@ -31,8 +31,7 @@ echo -e "  💾  Root Disk     : ${var_disk} GB on ${var_storage}"
 echo -e "  📹  Record Disk   : ${var_record_disk} GB on ${var_storage} (mounted /mnt/frigate)"
 echo -e "  🧠  RAM           : ${var_ram} MiB"
 echo -e "  🧮  vCPUs         : ${var_cpu}"
-echo -e "  📦  Type          : Unprivileged LXC
-"
+echo -e "  📦  Type          : Unprivileged LXC\n"
 
 # --- prompt for LXC root password ---------------------------------------------
 # This loop prompts the user for a password for the LXC's root user.
@@ -44,7 +43,7 @@ while true; do
   echo
   read -s -r -p "Confirm the password: " LXC_PASSWORD2
   echo
-  if &&; then
+  if]; then
     msg_ok "Password set."
     break
   fi
@@ -66,22 +65,20 @@ tmpl_file="local:vztmpl/$(basename "$tmpl")"
 
 # --- create container ---------------------------------------------------------
 msg_info "Creating LXC $CTID …"
-pct create "$CTID" "$tmpl_file"                                  \\
-  -hostname "$CT_NAME"                                           \\
-  -password "$LXC_PASSWORD"                                      \\
-  -tags "$var_tags"                                              \\
-  -cores "$var_cpu" -memory "$var_ram"                           \\
-  -rootfs "${var_storage}:${var_disk}"                           \\
-  -features nesting=1,keyctl=1                                   \\
-  -net0 name=eth0,bridge=vmbr0,ip=dhcp                           \\
+pct create "$CTID" "$tmpl_file"                                  \
+  -hostname "$CT_NAME"                                           \
+  -password "$LXC_PASSWORD"                                      \
+  -tags "$var_tags"                                              \
+  -cores "$var_cpu" -memory "$var_ram"                           \
+  -rootfs "${var_storage}:${var_disk}"                           \
+  -features nesting=1,keyctl=1                                   \
+  -net0 name=eth0,bridge=vmbr0,ip=dhcp                           \
   -unprivileged "$var_unprivileged"
 msg_ok "Container created."
 
 # --- optional extra disk for recordings ---------------------------------------
 if [[ "$var_record_disk" -gt 0 ]]; then
   msg_info "Adding ${var_record_disk} GB recordings volume …"
-  # Note: The original script had a slight error here. It should be -mp0 path,size=X not path,size=path. Corrected.
-  pct set "$CTID" -mp0 "/mnt/frigate,size=${var_record_disk}G"
   pct set "$CTID" -mp0 "${var_storage}:${var_record_disk},mp=/mnt/frigate"
 fi
 
@@ -117,8 +114,8 @@ apt-get -y install ca-certificates curl gnupg
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \\
-https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" \\
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
 > /etc/apt/sources.list.d/docker.list
 apt-get update
 apt-get -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -128,6 +125,7 @@ msg_ok "Docker installed."
 
 # --- deploy Frigate via docker-compose ----------------------------------------
 msg_info "Deploying Frigate …"
+# Pass GIDs as arguments to the heredoc for safety
 pct exec "$CTID" -- bash -s -- "$VIDEO_GID" "$RENDER_GID" <<'EOF_CT'
 set -e
 VIDEO_GID_ARG=$1
@@ -143,7 +141,8 @@ services:
     restart: unless-stopped
     shm_size: 256m
     ports:
-      - "5000:5000"
+      # Map host port 8971 to container's UI port 5000
+      - "8971:5000"
       - "8554:8554"
       - "8555:8555/tcp"
       - "8555:8555/udp"
@@ -156,8 +155,6 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /opt/frigate/config:/config
       - /mnt/frigate:/media/frigate
-    environment:
-      FRIGATE_RTSP_PASSWORD: 'password'
 YML
 cd /opt/frigate
 docker compose up -d
@@ -165,60 +162,53 @@ EOF_CT
 msg_ok "Frigate container launched."
 
 # --- show access info and extract credentials ---------------------------------
-# This section waits for the Frigate container to log its initial credentials
-# and then extracts them for display.
-
 CT_IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
-FRIGATE_USER=""
-FRIGATE_PASS=""
-FOUND_TRIGGER=false
-TIMEOUT=180 # 3 minute timeout
-COUNT=0
-
-msg_info "Waiting for Frigate to generate initial credentials (max ${TIMEOUT}s) …"
+CRED_TIMEOUT=180 # 3 minute timeout
 
 # Wait until the Docker container is actually in a 'running' state
+msg_info "Waiting for Frigate container to start (max 60s)..."
+COUNT=0
 while]; do
   sleep 2
   COUNT=$((COUNT + 2))
-  if; then
+  if]; then
     msg_error "Frigate Docker container failed to start within the timeout period."
+    echo -e "${INFO}${YW} Please check the logs manually with the command below:${CL}"
+    echo -e "${INFO}   pct exec $CTID -- docker logs frigate"
     exit 1
   fi
 done
+msg_ok "Frigate container is running."
 
-# Stream logs and parse for credentials
-pct exec "$CTID" -- docker logs --follow frigate | while IFS= read -r line; do
-  if $FOUND_TRIGGER; then
-    if]; then
-      FRIGATE_USER=$(echo "$line" | awk '{print $NF}')
-    elif]; then
-      FRIGATE_PASS=$(echo "$line" | awk '{print $NF}')
-      break # Exit loop once password is found
-    fi
-  elif [[ "$line" == *"Created a default user:"* ]]; then
-    FOUND_TRIGGER=true
-  fi
+msg_info "Waiting for Frigate to generate initial credentials (max ${CRED_TIMEOUT}s) …"
 
-  # Timeout logic
-  COUNT=$((COUNT + 1)) # Simple counter based on log lines
-  if; then # Failsafe line count
-      msg_error "Timed out waiting for credential logs. Please check container logs manually."
-      break
-  fi
-done
+# Use timeout and grep to capture the credential block from the logs.
+# grep -m 1: find the first match then exit.
+# grep -A 2: print the matching line and the 2 lines after it.
+# The '|| true' prevents the script from exiting if timeout is reached.
+CRED_OUTPUT=$(timeout ${CRED_TIMEOUT}s bash -c "pct exec '$CTID' -- docker logs --follow frigate 2>/dev/null | grep -m 1 -A 2 'Created a default user:'" |
+
+| true)
+
+FRIGATE_USER=""
+FRIGATE_PASS=""
+
+if]; then
+    FRIGATE_USER=$(echo "$CRED_OUTPUT" | grep "user:" | awk '{print $NF}')
+    FRIGATE_PASS=$(echo "$CRED_OUTPUT" | grep "password:" | awk '{print $NF}')
+fi
 
 echo
 echo -e "${INFO} ${GN}Frigate LXC Provisioning Completed Successfully!${CL}"
 echo -e "${INFO} -----------------------------------------------------"
-echo -e "${INFO}${YW} Frigate UI: http://${CT_IP}:5000 ${CL}"
-if &&; then
+echo -e "${INFO}${YW} Frigate UI: http://${CT_IP}:8971 ${CL}"
+if]; then
   echo -e "${INFO}${GN} Initial Frigate credentials have been extracted:${CL}"
   echo -e "${INFO}   Username: ${YW}$FRIGATE_USER${CL}"
   echo -e "${INFO}   Password: ${YW}$FRIGATE_PASS${CL}"
   echo -e "${INFO} ${CYAN}It is strongly recommended to change this password after your first login.${CL}"
 else
-  echo -e "${INFO}${RD} Could not automatically extract Frigate credentials.${CL}"
+  msg_error "Could not automatically extract Frigate credentials within ${CRED_TIMEOUT}s."
   echo -e "${INFO}${YW} Please check the logs manually with the command below:${CL}"
   echo -e "${INFO}   pct exec $CTID -- docker logs frigate"
 fi
