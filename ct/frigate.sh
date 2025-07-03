@@ -46,8 +46,9 @@ while true; do
   if]; then
     msg_ok "Password set."
     break
+  else
+    msg_error "Passwords do not match or are empty. Please try again."
   fi
-  msg_error "Passwords do not match or are empty. Please try again."
 done
 
 # --- pull latest Ubuntu 24.04 template if missing -----------------------------
@@ -168,6 +169,7 @@ CRED_TIMEOUT=180 # 3 minute timeout
 # Wait until the Docker container is actually in a 'running' state
 msg_info "Waiting for Frigate container to start (max 60s)..."
 COUNT=0
+MAX_WAIT=60 # 60 seconds
 while]; do
   sleep 2
   COUNT=$((COUNT + 2))
